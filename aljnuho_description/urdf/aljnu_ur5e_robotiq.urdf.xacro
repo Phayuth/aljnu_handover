@@ -1,0 +1,33 @@
+<?xml version="1.0"?>
+<robot name="mobile_manipulator" xmlns:xacro="http://wiki.ros.org/xacro">
+    <!-- Include UR5e -->
+    <xacro:include filename="$(find aljnuho_description)/urdf/ur5e/ur.urdf.xacro" />
+
+    <!-- Include robotiq85 adapter-->
+    <!-- <xacro:include filename="$(find aljnuho_description)/urdf/robotiq85/ur_to_robotiq_adapter.urdf.xacro" />
+    <xacro:ur_to_robotiq prefix="" connected_to="ur5e_tool0" rotation="0.0" /> -->
+
+    <!-- Include robotiq85 gripper -->
+    <!-- <xacro:include filename="$(find robotiq2f_description)/urdf/robotiq85/robotiq_85_macro.urdf.xacro" />
+    <xacro:robotiq_85_gripper prefix="" parent="gripper_mount_link">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+    </xacro:robotiq_85_gripper> -->
+
+    <!-- include wrist adapter -->
+    <xacro:include
+        filename="$(find robotiq2f_description)/urdf/robotiq85/ur_to_robotiq_adapter.xacro" />
+    <xacro:ur_to_robotiq prefix="" connected_to="ur5e_tool0" rotation="0.0" />
+
+    <!-- include gripper -->
+    <xacro:include
+        filename="$(find robotiq2f_description)/urdf/robotiq85/robotiq_85_macro.xacro" />
+    <xacro:robotiq_85_gripper prefix="" parent="gripper_mount_link">
+        <origin xyz="0 0 0" rpy="0 0 0" />
+    </xacro:robotiq_85_gripper>
+
+    <!-- include ros2_control -->
+    <xacro:include
+        filename="$(find robotiq2f_description)/urdf/robotiq85/robotiq_85.ros2_control.xacro" />
+    <xacro:robotiq_85_control prefix="" use_fake_hardware="$(arg use_fake_hardware)" />
+
+</robot>

@@ -1,0 +1,8 @@
+classid: [40, 41]
+weight: "yolov8x-seg.pt"
+cam_robot_pose: "camera-robot-pose.json"
+cam_robot_matrix: "camera-robot-matrix.json"
+cam_left_id: 4
+cam_right_id: 10
+cam_left_stereo_config: "streo_left.yaml"
+cam_right_stereo_config: "streo_right.yaml"

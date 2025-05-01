@@ -1,0 +1,11 @@
+<root BTCPP_Format="4">
+    <BehaviorTree ID="MainTree">
+        <Sequence name="root_sequence">
+            <Action ID="OpenGripper" />
+            <Action ID="TryGraspObject" />
+            <Action ID="CloseGripper" />
+            <Action ID="TryDropOff" />
+            <Action ID="OpenGripper" />
+        </Sequence>
+    </BehaviorTree>
+</root>
