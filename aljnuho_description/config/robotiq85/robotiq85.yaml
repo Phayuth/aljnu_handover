@@ -1,0 +1,5 @@
+robotiq_85_node:
+  ros__parameters:
+    comport: /dev/ttyUSB0
+    baud: 115200
+    use_fake_hardware: true
