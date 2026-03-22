@@ -77,7 +77,7 @@ plot_transform(ax, np.eye(4), s=0.5)  # plot world frame
 ax.set_xlim(np.min(true_states[:, 0]), np.max(true_states[:, 0]))
 ax.set_ylim(np.min(true_states[:, 1]), np.max(true_states[:, 1]))
 ax.set_zlim(np.min(true_states[:, 2]), np.max(true_states[:, 2]))
-
+ax.set_box_aspect([1.0, 1.0, 1.0])
 ax.set_xlabel("X")
 ax.set_ylabel("Y")
 ax.set_zlabel("Z")
