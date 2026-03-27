@@ -1,7 +1,6 @@
 import numpy as np
 from robot3r import PlanarRRR
 import matplotlib.pyplot as plt
-import matplotlib.animation as animation
 from matplotlib.patches import Circle
 
 np.random.seed(42)
@@ -59,44 +58,47 @@ def sampling_rotation_matrix(n):
     return Q
 
 
-RRRR = sampling_rotation_matrix(2)
-
-xstart = np.array([0.0, 0.0])
-xgoal = np.array([1.0, 1.0])
-direction = 1  # +1 toward goal, -1 away
-
-fig, ax = plt.subplots()
-ax.set_xlim(-1.0, 1.0)
-ax.set_ylim(-1.0, 1.0)
-ax.set_aspect("equal")
-
-(point,) = ax.plot([], [], "ro")
-(line,) = ax.plot([], [], "b--")
-
-
-def update_(frame):
-    global xstart, direction
-
-    delta = xgoal - xstart
-    d = np.linalg.norm(delta)
-
-    if d < 0.01:
-        direction *= -1
-
-    step = 0.01 * delta / (d + 1e-8)
-    xstart += direction * step
-
-    point.set_data([xstart[0]], [xstart[1]])  # FIX
-    line.set_data([xstart[0], xgoal[0]], [xstart[1], xgoal[1]])
-
-    return point, line
+def sampling_rotation_matrix_bulk(dof, num_samples):
+    # batch first
+    A = np.random.randn(num_samples, dof, dof)
+    Qs, Rs = np.linalg.qr(A)  # shapes: (B, d, d)
+    # sign of diagonal of R -> (B, d)
+    signs = np.sign(np.diagonal(Rs, axis1=1, axis2=2))
+    # fix sign ambiguity (scale columns of Q)
+    Qs = Qs * signs[:, np.newaxis, :]
+    # enforce det = +1
+    dets = np.linalg.det(Qs)
+    Qs[dets < 0, :, 0] *= -1  # flip first column
+    return Qs
 
 
-ani = animation.FuncAnimation(fig, update_, interval=50, blit=True, repeat=True)
+# RR = sampling_rotation_matrix(3)
+# print(f"==>> RR.shape: \n{RR.shape}")
+# RRR = sampling_rotation_matrix_bulk(3, 10)
+# TTT = unit_ball_surface_sampling_bulk(3, 10).T
+# print(f"==>> RRR.shape: \n{RRR.shape}")
+# print(f"==>> TTT.shape: \n{TTT.shape}")
 
-plt.show()
+# from pytransform3d.plot_utils import make_3d_axis
+# from pytransform3d.transformations import plot_transform, random_transform
 
-raise
+# HHHRRAND = random_transform()
+# print(f"==>> HHHRRAND.shape: \n{HHHRRAND.shape}")
+# Hrand = []
+# for i in range(10):
+#     R = RRR[i]
+#     t = TTT[i]
+#     H = np.eye(4)
+#     H[:3, :3] = R
+#     H[:3, 3] = np.array([1, 1, 1])
+#     Hrand.append(H)
+
+# ax = make_3d_axis(ax_s=1, unit="m", n_ticks=6)
+# plot_transform(ax=ax, A2B=np.eye(4), s=0.1, name="Camera Frame")
+# for H in Hrand:
+#     plot_transform(ax=ax, A2B=H, s=0.1)
+# plt.tight_layout()
+# plt.show()
 
 
 def mouse_move(event):
