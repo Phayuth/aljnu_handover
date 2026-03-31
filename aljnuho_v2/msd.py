@@ -2,6 +2,15 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.animation import FuncAnimation
 from matplotlib.patches import Circle
+from robot3r import PlanarRRR
+
+np.random.seed(42)
+
+robot = PlanarRRR()
+qghost = np.array([2.3, -1.4, -0.9])
+link_pos_ghost = robot.forward_kinematic_link(qghost)
+eeposefixed = link_pos_ghost[-1]
+eepose = link_pos_ghost[-1]
 
 # system params
 m = 1.0
@@ -12,8 +21,8 @@ dt = 0.02
 c = 2.2 * np.sqrt(k_pos * m)
 
 # initial state
-x_pos, vx_pos = 0.0, 0.0
-y_pos, vy_pos = 0.0, 0.0
+x_pos, vx_pos = eepose[0], 0.0
+y_pos, vy_pos = eepose[1], 0.0
 xobj = 0.0
 yobj = 0.0
 r_obj_to_pos = np.linalg.norm([xobj - x_pos, yobj - y_pos])
@@ -39,14 +48,45 @@ def step_y(y, v, k):
 fig, ax = plt.subplots()
 ax.set_xlim(-2, 2)
 ax.set_ylim(-0.5, 0.5)
-creaching = Circle((0, 0), r_reaching, color="green", fill=False, linestyle="--", label="reaching radius")
+creaching = Circle(
+    (0, 0),
+    r_reaching,
+    color="green",
+    fill=False,
+    linestyle="--",
+    label="reaching radius",
+)
 ax.add_patch(creaching)
+
+
+(line_link_ghost,) = ax.plot(
+    link_pos_ghost[:, 0],
+    link_pos_ghost[:, 1],
+    "o--",
+    alpha=0.5,
+    label="ghost robot",
+)
+
+
 cir = Circle((xobj, yobj), r_obj_to_pos, color="blue", fill=False)
 ax.add_patch(cir)
 ax.axhline(0, color="gray", linestyle="--")
 ax.axvline(0, color="gray", linestyle="--")
 (pt_pos,) = ax.plot([], [], "o", label="robot ee")
 (obj_pos,) = ax.plot([], [], "x", color="red", label="object")
+(eefixed,) = ax.plot(
+    [eeposefixed[0], x_pos],
+    [eeposefixed[1], y_pos],
+    "s--",
+    color="purple",
+)
+(ee_to_obj,) = ax.plot(
+    [x_pos, xobj],
+    [y_pos, yobj],
+    "d--",
+    color="orange",
+    label="ee to object",
+)
 
 
 def mouse_move(event):
@@ -73,6 +113,8 @@ def mouse_move(event):
             vx_pos, vy_pos = 0.0, 0.0
         pt_pos.set_data([x_pos], [y_pos])
         obj_pos.set_data([xobj], [yobj])
+        eefixed.set_data([eeposefixed[0], x_pos], [eeposefixed[1], y_pos])
+        ee_to_obj.set_data([x_pos, xobj], [y_pos, yobj])
         plt.draw()
 
 
