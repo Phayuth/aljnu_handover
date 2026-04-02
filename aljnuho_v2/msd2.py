@@ -24,6 +24,15 @@ ax.set_aspect("equal")
 (spring_line,) = ax.plot([], [], "k-", label="spring")
 (wall_plot,) = ax.plot([], [], "go", markersize=8)  # wall point
 (wall_line,) = ax.plot([], [], "g--")  # spring to wall
+creach= plt.Circle(
+    (0, 0),
+    1.0,
+    color="cyan",
+    fill=False,
+    linestyle="--",
+    label="reaching radius",
+)
+ax.add_patch(creach)
 ax.legend()
 
 
@@ -49,13 +58,9 @@ def change_k(event):
         k = 50.0
         ax.set_title(f"Stiffness: {k}, default")
     elif event.key == " ":
-        k = 2*k_wall
+        k *= 1.5
         ax.set_title(f"Stiffness: {k}, wall spring")
     plt.draw()
-
-
-fig.canvas.mpl_connect("motion_notify_event", on_mouse_move)
-fig.canvas.mpl_connect("key_press_event", change_k)
 
 
 def update():
@@ -77,9 +82,9 @@ def update():
     fig.canvas.draw_idle()
 
 
-# simple loop
+fig.canvas.mpl_connect("motion_notify_event", on_mouse_move)
+fig.canvas.mpl_connect("key_press_event", change_k)
 timer = fig.canvas.new_timer(interval=int(dt * 1000))
 timer.add_callback(update)
 timer.start()
-
 plt.show()

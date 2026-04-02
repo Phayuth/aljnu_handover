@@ -1,6 +1,5 @@
 import numpy as np
 import matplotlib.pyplot as plt
-from matplotlib.animation import FuncAnimation
 from matplotlib.patches import Circle
 from robot3r import PlanarRRR
 
@@ -46,8 +45,6 @@ def step_y(y, v, k):
 
 
 fig, ax = plt.subplots()
-ax.set_xlim(-2, 2)
-ax.set_ylim(-0.5, 0.5)
 creaching = Circle(
     (0, 0),
     r_reaching,
@@ -68,10 +65,12 @@ ax.add_patch(creaching)
 )
 
 
-cir = Circle((xobj, yobj), r_obj_to_pos, color="blue", fill=False)
+cir = Circle(
+    (xobj, yobj), r_obj_to_pos, color="blue", fill=False, label="ee to object"
+)
 ax.add_patch(cir)
-ax.axhline(0, color="gray", linestyle="--")
-ax.axvline(0, color="gray", linestyle="--")
+cir2 = Circle((xobj, yobj), 0.0, color="red", fill=False, label="base to object")
+ax.add_patch(cir2)
 (pt_pos,) = ax.plot([], [], "o", label="robot ee")
 (obj_pos,) = ax.plot([], [], "x", color="red", label="object")
 (eefixed,) = ax.plot(
@@ -88,34 +87,20 @@ ax.axvline(0, color="gray", linestyle="--")
     label="ee to object",
 )
 
+ax.axhline(0, color="gray", linestyle="--")
+ax.axvline(0, color="gray", linestyle="--")
+ax.set_xlim(-1.0, 3.0)
+ax.set_ylim(-2.0, 2.0)
+ax.set_aspect("equal")
+ax.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
+
 
 def mouse_move(event):
     global x_pos, vx_pos, k_pos, xobj, yobj, y_pos, vy_pos
-
     x, y = event.xdata, event.ydata
     if x is not None and y is not None:
         xobj = x
         yobj = y
-        r_obj_to_pos = np.linalg.norm([xobj - x_pos, yobj - y_pos])
-        cir.set_center((xobj, yobj))
-        cir.set_radius(r_obj_to_pos)
-
-        x_pos, vx_pos = step_x(x_pos, vx_pos, k_pos)
-        y_pos, vy_pos = step_y(y_pos, vy_pos, k_pos)
-
-        # limit the position to be within the reaching radius
-        X = np.array([x_pos, y_pos])
-        if np.linalg.norm(X) >= r_reaching:
-            x_pos, y_pos = (
-                x_pos / np.linalg.norm(X) * r_reaching,
-                y_pos / np.linalg.norm(X) * r_reaching,
-            )
-            vx_pos, vy_pos = 0.0, 0.0
-        pt_pos.set_data([x_pos], [y_pos])
-        obj_pos.set_data([xobj], [yobj])
-        eefixed.set_data([eeposefixed[0], x_pos], [eeposefixed[1], y_pos])
-        ee_to_obj.set_data([x_pos, xobj], [y_pos, yobj])
-        plt.draw()
 
 
 def change_k(event):
@@ -130,13 +115,44 @@ def change_k(event):
         k_pos = 0.0
         ax.set_title(f"Stiffness: {k_pos}, no movement")
 
-    plt.draw()
+    fig.canvas.draw_idle()
 
 
-ax.set_xlim(-1.0, 3.0)
-ax.set_ylim(-2.0, 2.0)
-ax.set_aspect("equal")
-ax.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
-plt.connect("motion_notify_event", mouse_move)
-plt.connect("key_press_event", change_k)
+def loop():
+    global x_pos, vx_pos, k_pos, xobj, yobj, y_pos, vy_pos
+    r_obj_to_pos = np.linalg.norm([xobj - x_pos, yobj - y_pos])
+    cir.set_center((xobj, yobj))
+    cir.set_radius(r_obj_to_pos)
+    cir2.set_center((xobj, yobj))
+    cir2.set_radius(np.hypot(xobj - 0, yobj - 0))
+
+    x_pos, vx_pos = step_x(x_pos, vx_pos, k_pos)
+    y_pos, vy_pos = step_y(y_pos, vy_pos, k_pos)
+
+    # attempt ik for all approach points
+    # Xd = np.array([xobj, yobj, np.deg2rad(-75)])
+    # res = robot.inverse_kinematic_geometry(Xd)
+    # if res is not None:
+    # tik = res[0]  # Choose the first solution
+
+    # limit the position to be within the reaching radius
+    X = np.array([x_pos, y_pos])
+    if np.linalg.norm(X) >= r_reaching:
+        x_pos, y_pos = (
+            x_pos / np.linalg.norm(X) * r_reaching,
+            y_pos / np.linalg.norm(X) * r_reaching,
+        )
+        vx_pos, vy_pos = 0.0, 0.0
+    pt_pos.set_data([x_pos], [y_pos])
+    obj_pos.set_data([xobj], [yobj])
+    eefixed.set_data([eeposefixed[0], x_pos], [eeposefixed[1], y_pos])
+    ee_to_obj.set_data([x_pos, xobj], [y_pos, yobj])
+    fig.canvas.draw_idle()
+
+
+fig.canvas.mpl_connect("motion_notify_event", mouse_move)
+fig.canvas.mpl_connect("key_press_event", change_k)
+timer = fig.canvas.new_timer(interval=int(dt * 1000))
+timer.add_callback(loop)
+timer.start()
 plt.show()
