@@ -1,5 +1,11 @@
 import numpy as np
 import matplotlib.pyplot as plt
+from robot3r import PlanarRRR
+
+robot = PlanarRRR()
+qghost = np.array([2.3, -1.4, -0.9])
+link_pos_ghost = robot.forward_kinematic_link(qghost)
+eepose = link_pos_ghost[-1]
 
 # parameters
 m = 1.0
@@ -13,19 +19,30 @@ x = np.array([0.5, 0.5])  # mass position
 v = np.array([0.0, 0.0])  # velocity
 anchor = np.array([0.0, 0.0])  # mouse-controlled point
 wall = np.array([0.0, 0.0])
+# wall = np.array(eepose) # this is ee pose
+base = np.array([0.0, 0.0]) # this is robot base
 
 # figure
 fig, ax = plt.subplots()
-ax.set_xlim(-2, 2)
-ax.set_ylim(-2, 2)
+ax.axhline(0, color="gray", linestyle="--")
+ax.axvline(0, color="gray", linestyle="--")
+ax.set_xlim(-1.0, 3.0)
+ax.set_ylim(-2.0, 2.0)
 ax.set_aspect("equal")
+ax.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
 (mass_plot,) = ax.plot([], [], "bo", markersize=10, label="mass")
 (anchor_plot,) = ax.plot([], [], "ro", markersize=8, label="anchor")
 (spring_line,) = ax.plot([], [], "k-", label="spring")
 (wall_plot,) = ax.plot([], [], "go", markersize=8)  # wall point
 (wall_line,) = ax.plot([], [], "g--")  # spring to wall
 (wall_to_mass_line,) = ax.plot([], [], "g-")  # line from wall to mass
-
+(line_link_ghost,) = ax.plot(
+    link_pos_ghost[:, 0],
+    link_pos_ghost[:, 1],
+    "o--",
+    alpha=0.5,
+    label="ghost robot",
+)
 rreach = 1.0
 # adaptive stiffness limits
 k_base = 50.0
@@ -80,7 +97,7 @@ def change_k(event):
 
 
 def update():
-    global x, v, anchor, wall, k, k_wall
+    global x, v, anchor, wall, k, k_wall, base
 
     dist_wall_to_anchor = np.linalg.norm(wall - anchor)
 

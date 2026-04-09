@@ -57,6 +57,51 @@ def generate_cube_pointcloud(center, size, num_points=500):
     return np.array(points)
 
 
+def cube_pointcloud_normal_vector_estimation(points):
+    """Estimate a unit normal vector for each point in a point cloud.
+
+    Method:
+    1) For each point, find k-nearest neighbors (brute force with NumPy).
+    2) Fit a local plane by PCA (smallest covariance eigenvector = normal).
+    3) Orient normal consistently outward from cloud centroid.
+    """
+    if points.ndim != 2 or points.shape[1] != 3:
+        raise ValueError("points must have shape (N, 3)")
+
+    n_points = points.shape[0]
+    if n_points < 4:
+        raise ValueError("at least 4 points are required to estimate normals")
+
+    k = min(20, n_points - 1)
+    normals = np.zeros_like(points)
+    cloud_center = np.mean(points, axis=0)
+
+    # Pairwise distances for neighbor lookup.
+    diff = points[:, None, :] - points[None, :, :]
+    dists = np.linalg.norm(diff, axis=2)
+
+    for i in range(n_points):
+        # Skip index 0 (the point itself, distance == 0).
+        nn_idx = np.argsort(dists[i])[1 : k + 1]
+        neighborhood = points[nn_idx]
+
+        local_center = np.mean(neighborhood, axis=0)
+        centered = neighborhood - local_center
+        cov = centered.T @ centered / max(centered.shape[0] - 1, 1)
+
+        eigvals, eigvecs = np.linalg.eigh(cov)
+        normal = eigvecs[:, np.argmin(eigvals)]
+
+        # Keep a consistent outward direction for cube-like objects.
+        if np.dot(normal, points[i] - cloud_center) < 0:
+            normal = -normal
+
+        normals[i] = normal / np.linalg.norm(normal)
+
+    return normals
+
+
+
 def detect_stable_plane_on_pointcloud(points):
     pass
 
@@ -69,6 +114,7 @@ zz = a * xx + b * yy + d
 center = np.array([0.0, 0.0, 0.5])
 size = 0.2
 cube_pc = generate_cube_pointcloud(center=center, size=size)
+cube_normals = cube_pointcloud_normal_vector_estimation(cube_pc)
 
 ax = make_3d_axis(1)
 plot_transform(ax, np.eye(4), s=0.5, name="world")
@@ -85,6 +131,20 @@ ax.scatter(
     cube_pc[:, 2],
     c="red",
     label="cube points",
+)
+
+ax.quiver(
+    cube_pc[:, 0],
+    cube_pc[:, 1],
+    cube_pc[:, 2],
+    cube_normals[:, 0],
+    cube_normals[:, 1],
+    cube_normals[:, 2],
+    length=0.03,
+    linewidth=1,
+    color="black",
+    normalize=True,
+    label="cube normals vectors",
 )
 
 ax.plot_surface(xx, yy, zz, alpha=0.5, color="cyan", label="detected plane")

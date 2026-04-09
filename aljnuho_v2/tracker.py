@@ -107,7 +107,8 @@ riskel = Ellipse(
     (0, 0),
     width=1,
     height=1,
-    edgecolor="orange",
+    linestyle="--",
+    edgecolor="green",
     facecolor="none",
     label="Risk Ellipsoid",
 )
