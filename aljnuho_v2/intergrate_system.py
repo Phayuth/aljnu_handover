@@ -51,7 +51,7 @@ if __name__ == "__main__":
     grasp = GraspApproachCone()
     system = IntegrateSystem()
     topt = TrajectoryOptimizer()
-
+    rreach = 1.0
     # initial measurement
     z_meas = np.array([0, 0, 0, 0, 0, 0])
     z_meas_filtered = np.array([0, 0, 0, 0, 0, 0])
@@ -94,7 +94,15 @@ if __name__ == "__main__":
         label="Risk Ellipsoid",
     )
     ax.add_patch(riskel)
-
+    creach = plt.Circle(
+        (0, 0),
+        rreach,
+        color="cyan",
+        fill=False,
+        linestyle="--",
+        label="reaching radius",
+    )
+    ax.add_patch(creach)
     status_text = ax.text(
         0.02,
         0.98,
