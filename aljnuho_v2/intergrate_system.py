@@ -51,7 +51,7 @@ if __name__ == "__main__":
     grasp = GraspApproachCone()
     system = IntegrateSystem()
     topt = TrajectoryOptimizer()
-    rreach = 1.0
+    rreach = 0.85
     # initial measurement
     z_meas = np.array([0, 0, 0, 0, 0, 0])
     z_meas_filtered = np.array([0, 0, 0, 0, 0, 0])
