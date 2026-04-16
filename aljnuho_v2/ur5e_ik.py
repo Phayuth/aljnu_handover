@@ -1,14 +1,13 @@
 import numpy as np
-from eaik.IK_DH import DhRobot
-from pytransform3d.plot_utils import make_3d_axis
-from pytransform3d.transform_manager import TransformManager
-from pytransform3d.transformations import plot_transform
 import matplotlib.pyplot as plt
 import rtde_control
 import rtde_receive
 import rtde_io
 import robotiq_gripper
-import time
+from eaik.IK_DH import DhRobot
+from pytransform3d.plot_utils import make_3d_axis
+from pytransform3d.transform_manager import TransformManager
+from pytransform3d.transformations import plot_transform
 
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
 
@@ -54,6 +53,7 @@ class RobotUR5eKin:
         self.alpha = np.array([np.pi / 2, 0, 0, np.pi / 2, -np.pi / 2, 0])
         self.a = np.array([0, -0.425, -0.3922, 0, 0, 0])
         self.bot = DhRobot(self.alpha, self.a, self.d)
+        self.reach = 0.85
 
     def solve_fk(self, q):
         return self.bot.fwdKin(q)
@@ -98,15 +98,96 @@ class RobotUR5eKin:
 
         return relative_tf, world_tf
 
-    def plot_link_transforms(self, q, frame_size=0.08):
+    def plot_parallel_gripper(
+        self,
+        ax,
+        Hgrasp,
+        finger_gap=0.08,
+        finger_length=0.12,
+        jaw_depth=0.02,
+    ):
+        """Plot a simple 2-finger parallel gripper.
+        Finger direction: +Z axis of gripper frame.
+        Opening/closing direction: X axis of gripper frame.
+        """
+
+        def transform_points(Hgrasp, points_local):
+            """Transform Nx3 points from gripper frame to world frame."""
+            points_h = np.hstack(
+                [points_local, np.ones((points_local.shape[0], 1))]
+            )
+            return (Hgrasp @ points_h.T).T[:, :3]
+
+        half_gap = 0.5 * finger_gap
+
+        # Finger center lines in local frame.
+        left_finger_local = np.array(
+            [[-half_gap, 0.0, 0.0], [-half_gap, 0.0, finger_length]]
+        )
+        right_finger_local = np.array(
+            [[half_gap, 0.0, 0.0], [half_gap, 0.0, finger_length]]
+        )
+
+        # Palm bar at z = 0 linking both fingers.
+        palm_local = np.array([[-half_gap, 0.0, 0.0], [half_gap, 0.0, 0.0]])
+
+        # Small jaw-depth lines make each finger easier to see in 3D.
+        left_depth_local = np.array(
+            [[-half_gap, -jaw_depth, 0.0], [-half_gap, jaw_depth, 0.0]]
+        )
+        right_depth_local = np.array(
+            [[half_gap, -jaw_depth, 0.0], [half_gap, jaw_depth, 0.0]]
+        )
+
+        left_finger = transform_points(Hgrasp, left_finger_local)
+        right_finger = transform_points(Hgrasp, right_finger_local)
+        palm = transform_points(Hgrasp, palm_local)
+        left_depth = transform_points(Hgrasp, left_depth_local)
+        right_depth = transform_points(Hgrasp, right_depth_local)
+
+        ax.plot(
+            left_finger[:, 0],
+            left_finger[:, 1],
+            left_finger[:, 2],
+            "r-",
+            linewidth=3,
+        )
+        ax.plot(
+            right_finger[:, 0],
+            right_finger[:, 1],
+            right_finger[:, 2],
+            "r-",
+            linewidth=3,
+        )
+        ax.plot(
+            palm[:, 0],
+            palm[:, 1],
+            palm[:, 2],
+            "k-",
+            linewidth=2,
+        )
+        ax.plot(
+            left_depth[:, 0],
+            left_depth[:, 1],
+            left_depth[:, 2],
+            "k-",
+            linewidth=2,
+        )
+        ax.plot(
+            right_depth[:, 0],
+            right_depth[:, 1],
+            right_depth[:, 2],
+            "k-",
+            linewidth=2,
+        )
+
+    def plot_link_transforms(self, ax, q, frame_size=0.08):
         """Plot all frame transforms derived from DH parameters for a joint state."""
         relative_tf, world_tf = self.get_dh_chain(q)
 
         tm = TransformManager()
         for i, A_i in enumerate(relative_tf, start=1):
             tm.add_transform(f"link_{i}", f"link_{i-1}", A_i)
-
-        ax = make_3d_axis(ax_s=1.0)
 
         # Plot frame axes for base and each link frame.
         for i, T_0i in enumerate(world_tf):
@@ -117,34 +198,60 @@ class RobotUR5eKin:
         ax.plot(origins[:, 0], origins[:, 1], origins[:, 2], "k-o", linewidth=2)
 
         # Draw plane at 0,0,0 for reference
-        plane_size = 0.5
+        plane_size = 0.85
         ax.plot([-plane_size, plane_size], [0, 0], [0, 0], "r--")
         ax.plot([0, 0], [-plane_size, plane_size], [0, 0], "g--")
 
-        reach = np.sum(np.abs(self.a)) + np.sum(np.abs(self.d))
-        lim = max(0.8, 1.1 * reach)
-        ax.set_xlim([-lim, lim])
-        ax.set_ylim([-lim, lim])
-        ax.set_zlim([0.0, lim])
+        tcir = np.linspace(0, 2 * np.pi, 100)
+        xcir = self.reach * np.cos(tcir)
+        ycir = self.reach * np.sin(tcir)
+        zcir = np.zeros_like(tcir)
+        ax.plot(xcir, ycir, zcir, "b--", label="Reachable Workspace")
+        ax.set_zlim([0.0, 1.0])
         ax.set_xlabel("X [m]")
         ax.set_ylabel("Y [m]")
         ax.set_zlabel("Z [m]")
-        ax.set_title("UR5e DH Link Transformations")
-        ax.set_box_aspect([1, 1, 1])
-        plt.tight_layout()
-        plt.show()
 
         # A_chain, T_chain = robot_kin.plot_link_transforms(q)
         # for i, A_i in enumerate(A_chain, start=1):
         #     print(f"A_{i} (link_{i-1} -> link_{i}):\n", A_i)
         # for i, T_0i in enumerate(T_chain):
         #     print(f"T_0{i} (base -> link_{i}):\n", T_0i)
-
-        return relative_tf, world_tf
+        # return relative_tf, world_tf
+        return ax
 
 
 if __name__ == "__main__":
     # robot_real = RobotController()
     robot_kin = RobotUR5eKin()
-    q = [0, -np.pi / 4, np.pi / 2, -np.pi / 4, -np.pi / 2, 0]
-    robot_kin.plot_link_transforms(q)
+    q0 = [0, -np.pi / 4, np.pi / 2, -np.pi / 4, -np.pi / 2, 0]
+    qgrasp = [-2.5941, -1.1971, 1.9169, -2.2906, -1.5708, 0.5475]
+    Hgrasp = np.array(
+        [
+            [0.0000, -1.0000, 0.0000, 0.4],
+            [-1.0000, -0.0000, -0.0000, 0.4],
+            [0.0000, -0.0000, -1.0000, 0.2],
+            [0.0000, 0.0000, 0.0000, 1.0000],
+        ]
+    )
+
+    res_ = robot_kin.solve_aik(Hgrasp)
+    if res_[0] == 0:
+        print("No IK solution found for the given grasp pose.")
+    else:
+        n, Q = res_
+        print(f"Number of IK solutions found: {n}")
+        print(Q)
+
+        diff = Q - np.array(q0)
+        norms = np.linalg.norm(diff, axis=1)
+        best_idx = np.argmin(norms)
+        print(f"Best IK solution index: {best_idx}, q: {Q[best_idx]}")
+        q = Q[best_idx]
+
+    ax3d = make_3d_axis(ax_s=1.0)
+
+    (obj3d_line,) = ax3d.plot([], [], [], "ro", label="Grasp Pose")
+    robot_kin.plot_link_transforms(ax3d, q0)
+    robot_kin.plot_link_transforms(ax3d, q)
+    robot_kin.plot_parallel_gripper(ax3d, Hgrasp)

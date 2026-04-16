@@ -2,36 +2,11 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Ellipse
 from aljnuho_v2.tracker_class import UKFRiskTracker
-
-
-class GraspApproachCone:
-
-    def __init__(self):
-        self.cone_length = 0.5
-        self.cone_radius = 0.3
-        self.r_min = 0.0
-        self.r_max = self.cone_length
-
-    def R(self, th):
-        return np.array([[np.cos(th), -np.sin(th)], [np.sin(th), np.cos(th)]])
-
-    def get_grasp_approach(self, target_pos):
-        angle = -1.0
-        grasp_pose = np.array([target_pos[0], target_pos[1], angle])
-        return grasp_pose
-
-    def get_cone(self, target_grasp):
-        target_pos = target_grasp[:2]
-        n = np.array([np.cos(target_grasp[2]), np.sin(target_grasp[2])])
-        n = n / np.linalg.norm(n)
-
-        t = np.array([self.r_min, self.r_max])
-        v1 = self.R(self.cone_radius) @ n
-        v2 = self.R(-self.cone_radius) @ n
-        ray1 = target_pos.reshape(2, 1) - v1.reshape(2, 1) * t
-        ray2 = target_pos.reshape(2, 1) - v2.reshape(2, 1) * t
-
-        return ray1, ray2
+from ur5e_ik import RobotUR5eKin, RobotController
+import threading
+from pytransform3d.plot_utils import make_3d_axis
+from pytransform3d.transform_manager import TransformManager
+from pytransform3d.transformations import plot_transform
 
 
 class TrajectoryOptimizer:
@@ -46,12 +21,137 @@ class IntegrateSystem:
         pass
 
 
+def project_point_on_rotated_ellipse(
+    center, width, height, angle_deg, target_point
+):
+    """Project from ellipse center toward target_point onto rotated ellipse boundary."""
+    cx, cz = center
+    tx, tz = target_point
+
+    a = max(width * 0.5, 1e-9)
+    b = max(height * 0.5, 1e-9)
+
+    v_world = np.array([tx - cx, tz - cz], dtype=float)
+    if np.linalg.norm(v_world) < 1e-12:
+        return cx, cz
+
+    theta = np.deg2rad(angle_deg)
+    cth = np.cos(theta)
+    sth = np.sin(theta)
+
+    # Rotate world vector into ellipse local frame.
+    v_local_x = cth * v_world[0] + sth * v_world[1]
+    v_local_z = -sth * v_world[0] + cth * v_world[1]
+
+    denom = np.sqrt((v_local_x / a) ** 2 + (v_local_z / b) ** 2)
+    if denom < 1e-12:
+        return cx, cz
+
+    p_local = np.array([v_local_x / denom, v_local_z / denom])
+
+    # Rotate boundary point back to world frame.
+    px = cth * p_local[0] - sth * p_local[1] + cx
+    pz = sth * p_local[0] + cth * p_local[1] + cz
+    return px, pz
+
+
+def project_line_to_reach_circle(ee_point, toward_point, radius):
+    """Intersect ray from ee_point toward toward_point with circle centered at origin."""
+    ex, ez = ee_point
+    tx, tz = toward_point
+    d = np.array([tx - ex, tz - ez], dtype=float)
+    if np.linalg.norm(d) < 1e-12:
+        return ex, ez
+
+    p = np.array([ex, ez], dtype=float)
+    a = np.dot(d, d)
+    b = 2.0 * np.dot(p, d)
+    c = np.dot(p, p) - radius**2
+    disc = b * b - 4.0 * a * c
+
+    if disc < 0.0:
+        return ex, ez
+
+    sqrt_disc = np.sqrt(disc)
+    t1 = (-b - sqrt_disc) / (2.0 * a)
+    t2 = (-b + sqrt_disc) / (2.0 * a)
+    t_candidates = [t for t in (t1, t2) if t >= 0.0]
+    if not t_candidates:
+        return ex, ez
+
+    t = max(t_candidates)
+    p_hit = p + t * d
+    return p_hit[0], p_hit[1]
+
+
+def select_reach_target_model(
+    ee_point,
+    ellipse_proj_point,
+    radius,
+    follow_ellipse,
+    hysteresis=0.02,
+):
+    """Select target on reach circle or ellipse projection using a mode switch.
+
+    Rule:
+    - Stay on reach circle by default.
+    - Switch to ellipse projection when ellipse projection enters reach radius.
+    - Use small hysteresis to avoid mode chattering near boundary.
+    """
+    proj_r = np.hypot(ellipse_proj_point[0], ellipse_proj_point[1])
+
+    enter = proj_r <= radius
+    leave = proj_r > radius + hysteresis
+
+    if follow_ellipse:
+        if leave:
+            follow_ellipse = False
+    else:
+        if enter:
+            follow_ellipse = True
+
+    if follow_ellipse:
+        return ellipse_proj_point[0], ellipse_proj_point[1], follow_ellipse
+
+    xreach, zreach = project_line_to_reach_circle(
+        ee_point=ee_point,
+        toward_point=ellipse_proj_point,
+        radius=radius,
+    )
+    return xreach, zreach, follow_ellipse
+
+
 if __name__ == "__main__":
+    # robot_real = RobotController()
+    robot_kin = RobotUR5eKin()
     tracker = UKFRiskTracker()
-    grasp = GraspApproachCone()
     system = IntegrateSystem()
     topt = TrajectoryOptimizer()
     rreach = 0.85
+
+    q0 = [0, -np.pi / 4, np.pi / 2, -np.pi / 4, -np.pi / 2, 0]
+    Hcurrent = np.array(
+        [
+            [0.0000, -1.0000, 0.0000, 0.4],
+            [-1.0000, -0.0000, -0.0000, 0.4],
+            [0.0000, -0.0000, -1.0000, 0.5],
+            [0.0000, 0.0000, 0.0000, 1.0000],
+        ]
+    )
+    ikres_ = robot_kin.solve_aik(Hcurrent)
+    if ikres_ is not None:
+        norms = np.linalg.norm(ikres_[1] - q0, axis=1)
+        best_idx = np.argmin(norms)
+        qcurrent = ikres_[1][best_idx]
+    else:
+        pass
+
+    ax3d = make_3d_axis(ax_s=1.0)
+
+    (obj3d_line,) = ax3d.plot([], [], [], "ro", label="Grasp Pose")
+    robot_kin.plot_link_transforms(ax3d, qcurrent)
+    robot_kin.plot_parallel_gripper(ax3d, Hcurrent)
+
     # initial measurement
     z_meas = np.array([0, 0, 0, 0, 0, 0])
     z_meas_filtered = np.array([0, 0, 0, 0, 0, 0])
@@ -59,20 +159,25 @@ if __name__ == "__main__":
     # tracking current mouse position
     mouse_pos = {"x": None, "y": None}
     mouse_pos_prev = {"x": None, "y": None}
+    reach_mode = {"follow_ellipse": False}
 
-    fig, ax = plt.subplots()
-    ax.axhline(0, color="gray", linestyle="--")
-    ax.axvline(0, color="gray", linestyle="--")
-    ax.set_xlim(-1.0, 3.0)
-    ax.set_ylim(-2.0, 2.0)
-    ax.set_aspect("equal")
+    fig, ax2d = plt.subplots()
+    ax2d.axhline(0, color="gray", linestyle="--")
+    ax2d.axvline(0, color="gray", linestyle="--")
+    ax2d.set_xlim(-1.0, 1.5)
+    ax2d.set_ylim(-1.5, 1.5)
+    ax2d.set_xlabel("X [m]")
+    ax2d.set_ylabel("Z [m]")
+    ax2d.set_aspect("equal")
 
-    (ukf_line,) = ax.plot([], [], "bo", label="UKF Estimate")
-    (measurement_line,) = ax.plot([], [], "ro", label="Measurement")
-    (grasp_line,) = ax.plot([], [], "g-", label="Grasp Approach")
-    (ray1_line,) = ax.plot([], [], "c--", label="Cone Ray 1")
-    (ray2_line,) = ax.plot([], [], "c--", label="Cone Ray 2")
-    (traj_line,) = ax.plot([], [], "m-", label="Optimized Trajectory")
+    (ukf_line,) = ax2d.plot([], [], "bo", label="UKF Estimate")
+    (measurement_line,) = ax2d.plot([], [], "ro", label="Measurement")
+    (ee_current_line,) = ax2d.plot([], [], "gx", label="EE Current")
+    (ee_obj_line,) = ax2d.plot([], [], "g-", linewidth=2, label="EE to Risk")
+    (risk_proj_point,) = ax2d.plot([], [], "go", label="Risk Projection")
+    (reach_proj_point,) = ax2d.plot([], [], "mo", label="Reach Projection")
+    # (grasp_line,) = ax2d.plot([], [], "g-", label="Grasp Approach")
+    # (traj_line,) = ax2d.plot([], [], "m-", label="Optimized Trajectory")
 
     el = Ellipse(
         (0, 0),
@@ -82,7 +187,7 @@ if __name__ == "__main__":
         facecolor="none",
         label="Covariance",
     )
-    ax.add_patch(el)
+    ax2d.add_patch(el)
 
     riskel = Ellipse(
         (0, 0),
@@ -93,7 +198,7 @@ if __name__ == "__main__":
         facecolor="none",
         label="Risk Ellipsoid",
     )
-    ax.add_patch(riskel)
+    ax2d.add_patch(riskel)
     creach = plt.Circle(
         (0, 0),
         rreach,
@@ -102,12 +207,12 @@ if __name__ == "__main__":
         linestyle="--",
         label="reaching radius",
     )
-    ax.add_patch(creach)
-    status_text = ax.text(
+    ax2d.add_patch(creach)
+    status_text = ax2d.text(
         0.02,
         0.98,
         "speed=0.00 | guard=HOLD",
-        transform=ax.transAxes,
+        transform=ax2d.transAxes,
         ha="left",
         va="top",
     )
@@ -118,7 +223,7 @@ if __name__ == "__main__":
             mouse_pos["y"] = event.ydata
 
     def loop():
-        global z_meas, z_meas_filtered
+        global z_meas, z_meas_filtered, Hcurrent
 
         if mouse_pos["x"] is not None and mouse_pos["y"] is not None:
 
@@ -150,8 +255,11 @@ if __name__ == "__main__":
             tracker.ukf.update(z_meas)
 
             # Update plot
-            ukf_line.set_data([tracker.ukf.x[0]], [tracker.ukf.x[1]])
+            xobj = tracker.ukf.x[0]
+            zobj = tracker.ukf.x[1]
+            ukf_line.set_data([xobj], [zobj])
             measurement_line.set_data([z_meas[0]], [z_meas[1]])
+            ee_current_line.set_data([Hcurrent[0, 3]], [Hcurrent[2, 3]])
 
             # update covariance ellipse
             el.center = (tracker.ukf.x[0], tracker.ukf.x[1])
@@ -169,23 +277,35 @@ if __name__ == "__main__":
             status_text.set_text(f"speed={speed_xy:.2f} | guard={guard_action}")
             status_text.set_color(guard_color)
 
-            # grasp
-            grasp_pose = grasp.get_grasp_approach(tracker.ukf.x[:2])
-            grasp_line.set_data(
-                [tracker.ukf.x[0], tracker.ukf.x[0] + 0.5 * np.cos(grasp_pose[2])],
-                [tracker.ukf.x[1], tracker.ukf.x[1] + 0.5 * np.sin(grasp_pose[2])],
+            xproj, zproj = project_point_on_rotated_ellipse(
+                center=(xobj, zobj),
+                width=riskel.width,
+                height=riskel.height,
+                angle_deg=riskel.angle,
+                target_point=(Hcurrent[0, 3], Hcurrent[2, 3]),
             )
-            ray1, ray2 = grasp.get_cone(grasp_pose)
-            ray1_line.set_data(ray1[0], ray1[1])
-            ray2_line.set_data(ray2[0], ray2[1])
+            xreach, zreach, reach_mode["follow_ellipse"] = (
+                select_reach_target_model(
+                    ee_point=(Hcurrent[0, 3], Hcurrent[2, 3]),
+                    ellipse_proj_point=(xproj, zproj),
+                    radius=rreach,
+                    follow_ellipse=reach_mode["follow_ellipse"],
+                )
+            )
+
+            obj3d_line.set_data_3d([xc], [0.0], [yc])
+            ee_obj_line.set_data([Hcurrent[0, 3], xproj], [Hcurrent[2, 3], zproj])
+            risk_proj_point.set_data([xproj], [zproj])
+            reach_proj_point.set_data([xreach], [zreach])
 
             fig.canvas.draw_idle()
+            ax3d.figure.canvas.draw_idle()
 
             # Update previous position
             mouse_pos_prev["x"] = mouse_pos["x"]
             mouse_pos_prev["y"] = mouse_pos["y"]
 
-    ax.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
+    ax2d.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
     fig.canvas.mpl_connect("motion_notify_event", track_mouse)
     timer = fig.canvas.new_timer(interval=int(tracker.dt * 1000))
     timer.add_callback(loop)
