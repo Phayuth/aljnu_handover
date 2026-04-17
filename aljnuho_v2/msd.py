@@ -5,154 +5,151 @@ from robot3r import PlanarRRR
 
 np.random.seed(42)
 
-robot = PlanarRRR()
-qghost = np.array([2.3, -1.4, -0.9])
-link_pos_ghost = robot.forward_kinematic_link(qghost)
-eeposefixed = link_pos_ghost[-1]
-eepose = link_pos_ghost[-1]
 
-# system params
-m = 1.0
-# c = 0.5
-k_pos = 2.0  # normal spring
-k_neg = -1.0  # negative stiffness
-dt = 0.02
-c = 2.2 * np.sqrt(k_pos * m)
+class MSDRobotEE:
 
-# initial state
-x_pos, vx_pos = eepose[0], 0.0
-y_pos, vy_pos = eepose[1], 0.0
-xobj = 0.0
-yobj = 0.0
-r_obj_to_pos = np.linalg.norm([xobj - x_pos, yobj - y_pos])
-r_reaching = 1.0
+    def __init__(self):
+        # system params
+        self.m = 1.0
+        self.k_pos = 10  # normal spring
+        self.k_neg = -1.0  # negative stiffness
+        self.dt = 0.02
+        self.c = 2.2 * np.sqrt(self.k_pos * self.m)  # critical damping
 
-
-def step_x(x, v, k):
-    # spring-damper force: F = -k(x-xw) - c*v
-    a = (-k * (x - xobj) - c * v) / m
-    v = v + a * dt
-    x = x + v * dt
-    return x, v
+    def step(self, pos_vec, vel_vec, obj_vec):
+        # Vectorized 3D spring-damper force: F = -k(p - p_obj) - c*v
+        pos_vec = np.asarray(pos_vec, dtype=float)
+        vel_vec = np.asarray(vel_vec, dtype=float)
+        obj_vec = np.asarray(obj_vec, dtype=float)
+        a = (-self.k_pos * (pos_vec - obj_vec) - self.c * vel_vec) / self.m
+        vel_vec = vel_vec + a * self.dt
+        pos_vec = pos_vec + vel_vec * self.dt
+        return pos_vec, vel_vec
 
 
-def step_y(y, v, k):
-    # spring-damper force: F = -k(y-yw) - c*v
-    a = (-k * (y - yobj) - c * v) / m
-    v = v + a * dt
-    y = y + v * dt
-    return y, v
+if __name__ == "__main__":
+    eesystem = MSDRobotEE()
+    robot = PlanarRRR()
+    qghost = np.array([2.3, -1.4, -0.9])
+    link_pos_ghost = robot.forward_kinematic_link(qghost)
+    eeposefixed = np.array([link_pos_ghost[-1, 0], link_pos_ghost[-1, 1], 0.0])
+    eepose = eeposefixed.copy()
 
+    # initial state
+    pos = eepose.copy()
+    vel = np.zeros(3)
+    obj = np.zeros(3)
+    r_obj_to_pos = np.linalg.norm(obj - pos)
+    r_reaching = 1.0
 
-fig, ax = plt.subplots()
-creaching = Circle(
-    (0, 0),
-    r_reaching,
-    color="green",
-    fill=False,
-    linestyle="--",
-    label="reaching radius",
-)
-ax.add_patch(creaching)
+    fig, ax = plt.subplots()
+    creaching = Circle(
+        (0, 0),
+        r_reaching,
+        color="green",
+        fill=False,
+        linestyle="--",
+        label="reaching radius",
+    )
+    ax.add_patch(creaching)
 
+    (line_link_ghost,) = ax.plot(
+        link_pos_ghost[:, 0],
+        link_pos_ghost[:, 1],
+        "o--",
+        alpha=0.5,
+        label="ghost robot",
+    )
 
-(line_link_ghost,) = ax.plot(
-    link_pos_ghost[:, 0],
-    link_pos_ghost[:, 1],
-    "o--",
-    alpha=0.5,
-    label="ghost robot",
-)
+    cir = Circle(
+        (obj[0], obj[1]),
+        r_obj_to_pos,
+        color="blue",
+        fill=False,
+        label="ee to object",
+    )
+    ax.add_patch(cir)
+    cir2 = Circle(
+        (obj[0], obj[1]), 0.0, color="red", fill=False, label="base to object"
+    )
+    ax.add_patch(cir2)
+    (pt_pos,) = ax.plot([], [], "o", label="robot ee")
+    (obj_pos,) = ax.plot([], [], "x", color="red", label="object")
+    (eefixed,) = ax.plot(
+        [eeposefixed[0], pos[0]],
+        [eeposefixed[1], pos[1]],
+        "s--",
+        color="purple",
+    )
+    (ee_to_obj,) = ax.plot(
+        [pos[0], obj[0]],
+        [pos[1], obj[1]],
+        "d--",
+        color="orange",
+        label="ee to object",
+    )
 
+    ax.axhline(0, color="gray", linestyle="--")
+    ax.axvline(0, color="gray", linestyle="--")
+    ax.set_xlim(-1.0, 3.0)
+    ax.set_ylim(-2.0, 2.0)
+    ax.set_aspect("equal")
+    ax.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
 
-cir = Circle(
-    (xobj, yobj), r_obj_to_pos, color="blue", fill=False, label="ee to object"
-)
-ax.add_patch(cir)
-cir2 = Circle((xobj, yobj), 0.0, color="red", fill=False, label="base to object")
-ax.add_patch(cir2)
-(pt_pos,) = ax.plot([], [], "o", label="robot ee")
-(obj_pos,) = ax.plot([], [], "x", color="red", label="object")
-(eefixed,) = ax.plot(
-    [eeposefixed[0], x_pos],
-    [eeposefixed[1], y_pos],
-    "s--",
-    color="purple",
-)
-(ee_to_obj,) = ax.plot(
-    [x_pos, xobj],
-    [y_pos, yobj],
-    "d--",
-    color="orange",
-    label="ee to object",
-)
+    def mouse_move(event):
+        global obj
+        x, y = event.xdata, event.ydata
+        if x is not None and y is not None:
+            obj[:] = [x, y, 0.0]
 
-ax.axhline(0, color="gray", linestyle="--")
-ax.axvline(0, color="gray", linestyle="--")
-ax.set_xlim(-1.0, 3.0)
-ax.set_ylim(-2.0, 2.0)
-ax.set_aspect("equal")
-ax.legend(loc="upper right", bbox_to_anchor=(1.15, 1))
+    def change_k(event):
+        if event.key == "up":
+            eesystem.k_pos = 2.0
+            ax.set_title(f"Stiffness: {eesystem.k_pos}, attract to object")
+        elif event.key == "down":
+            eesystem.k_pos = eesystem.k_neg
+            ax.set_title(f"Stiffness: {eesystem.k_pos}, repel from object")
+        elif event.key == "right":
+            eesystem.k_pos = 0.0
+            ax.set_title(f"Stiffness: {eesystem.k_pos}, no movement")
 
+        fig.canvas.draw_idle()
 
-def mouse_move(event):
-    global x_pos, vx_pos, k_pos, xobj, yobj, y_pos, vy_pos
-    x, y = event.xdata, event.ydata
-    if x is not None and y is not None:
-        xobj = x
-        yobj = y
+    def loop():
+        global pos, vel, obj
+        r_obj_to_pos = np.linalg.norm(obj - pos)
+        cir.set_center((obj[0], obj[1]))
+        cir.set_radius(r_obj_to_pos)
+        cir2.set_center((obj[0], obj[1]))
+        cir2.set_radius(np.linalg.norm(obj[:2]))
 
+        pos, vel = eesystem.step(pos, vel, obj)
 
-def change_k(event):
-    global k_pos
-    if event.key == "up":
-        k_pos = 2.0
-        ax.set_title(f"Stiffness: {k_pos}, attract to object")
-    elif event.key == "down":
-        k_pos = -1.0
-        ax.set_title(f"Stiffness: {k_pos}, repel from object")
-    elif event.key == "right":
-        k_pos = 0.0
-        ax.set_title(f"Stiffness: {k_pos}, no movement")
+        # attempt ik for all approach points
+        # Xd = np.array([xobj, yobj, np.deg2rad(-75)])
+        # res = robot.inverse_kinematic_geometry(Xd)
+        # if res is not None:
+        # tik = res[0]  # Choose the first solution
 
-    fig.canvas.draw_idle()
+        # limit the position to be within the reaching radius
+        pos_norm = np.linalg.norm(pos)
+        if pos_norm >= r_reaching and pos_norm > 0.0:
+            pos = pos / pos_norm * r_reaching
+            vel[:] = 0.0
 
+        # Keep simulation in x-y plane while state remains 3D.
+        pos[2] = 0.0
+        obj[2] = 0.0
 
-def loop():
-    global x_pos, vx_pos, k_pos, xobj, yobj, y_pos, vy_pos
-    r_obj_to_pos = np.linalg.norm([xobj - x_pos, yobj - y_pos])
-    cir.set_center((xobj, yobj))
-    cir.set_radius(r_obj_to_pos)
-    cir2.set_center((xobj, yobj))
-    cir2.set_radius(np.hypot(xobj - 0, yobj - 0))
+        pt_pos.set_data([pos[0]], [pos[1]])
+        obj_pos.set_data([obj[0]], [obj[1]])
+        eefixed.set_data([eeposefixed[0], pos[0]], [eeposefixed[1], pos[1]])
+        ee_to_obj.set_data([pos[0], obj[0]], [pos[1], obj[1]])
+        fig.canvas.draw_idle()
 
-    x_pos, vx_pos = step_x(x_pos, vx_pos, k_pos)
-    y_pos, vy_pos = step_y(y_pos, vy_pos, k_pos)
-
-    # attempt ik for all approach points
-    # Xd = np.array([xobj, yobj, np.deg2rad(-75)])
-    # res = robot.inverse_kinematic_geometry(Xd)
-    # if res is not None:
-    # tik = res[0]  # Choose the first solution
-
-    # limit the position to be within the reaching radius
-    X = np.array([x_pos, y_pos])
-    if np.linalg.norm(X) >= r_reaching:
-        x_pos, y_pos = (
-            x_pos / np.linalg.norm(X) * r_reaching,
-            y_pos / np.linalg.norm(X) * r_reaching,
-        )
-        vx_pos, vy_pos = 0.0, 0.0
-    pt_pos.set_data([x_pos], [y_pos])
-    obj_pos.set_data([xobj], [yobj])
-    eefixed.set_data([eeposefixed[0], x_pos], [eeposefixed[1], y_pos])
-    ee_to_obj.set_data([x_pos, xobj], [y_pos, yobj])
-    fig.canvas.draw_idle()
-
-
-fig.canvas.mpl_connect("motion_notify_event", mouse_move)
-fig.canvas.mpl_connect("key_press_event", change_k)
-timer = fig.canvas.new_timer(interval=int(dt * 1000))
-timer.add_callback(loop)
-timer.start()
-plt.show()
+    fig.canvas.mpl_connect("motion_notify_event", mouse_move)
+    fig.canvas.mpl_connect("key_press_event", change_k)
+    timer = fig.canvas.new_timer(interval=int(eesystem.dt * 1000))
+    timer.add_callback(loop)
+    timer.start()
+    plt.show()

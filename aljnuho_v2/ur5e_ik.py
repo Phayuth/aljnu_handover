@@ -5,6 +5,7 @@ import rtde_receive
 import rtde_io
 import robotiq_gripper
 from eaik.IK_DH import DhRobot
+import cv2
 from pytransform3d.plot_utils import make_3d_axis
 from pytransform3d.transform_manager import TransformManager
 from pytransform3d.transformations import plot_transform
@@ -24,12 +25,30 @@ class RobotController:
 
         self.gripper = robotiq_gripper.RobotiqGripper()
         self.gripper.connect(self.hostip, 63352)
+        self.activate_gripper()
 
     def activate_gripper(self):
         if self.gripper.is_active():
             print("Gripper is active")
         else:
             self.gripper.activate()
+
+    def get_actual_tcp_pose(self):
+        tcp_pose = np.array(self.rtde_r.getActualTCPPose())
+        H = np.eye(4)
+        H[:3, :3] = cv2.Rodrigues(tcp_pose[3:6])[0]
+        H[:3, 3] = tcp_pose[0:3]
+        return H
+
+    def get_actual_tcp_speed(self):
+        tcp_speed = self.rtde_r.getActualTCPSpeed()
+        return tcp_speed
+
+    def make_pose_from_H(self, H):
+        pose = np.zeros(6)
+        pose[0:3] = H[:3, 3]
+        pose[3:6] = cv2.Rodrigues(H[:3, :3])[0].flatten()
+        return pose
 
     def get_actual_q(self):
         return self.rtde_r.getActualQ()
@@ -40,9 +59,11 @@ class RobotController:
     def get_joint_torques(self):
         return self.rtde_c.getJointTorques()
 
+    def move_joints(self, q, vel=None, acc=None):
+        self.rtde_c.moveJ(q)
+
     def move_gripper(self, position, speed=255, force=255):
         ack = self.gripper.move(position, speed, force)
-        print(f"Move command ack: {ack}")
         return ack
 
 
@@ -221,16 +242,45 @@ class RobotUR5eKin:
         return ax
 
 
+def servoing():
+    robot_real = RobotController()
+
+    H = robot_real.get_actual_tcp_pose()
+    q0 = robot_real.get_actual_q()
+    qhome = [3.14, -1.610, 1.61, -1.558, -1.562, 0.0]
+
+    # Parameters
+    vel = 0.5
+    acc = 0.5
+    dt = 1.0 / 500  # 2ms
+    lookahead_time = 0.1
+    gain = 300
+
+    robot_real.move_joints(qhome)
+
+    # Execute 500Hz control loop for 2 seconds, each cycle is 2ms
+    for i in range(1000):
+        t_start = robot_real.rtde_c.initPeriod()
+        # robot_real.rtde_c.servoL(Hpose, vel, acc, dt, lookahead_time, gain)
+        robot_real.rtde_c.servoJ(qhome, vel, acc, dt, lookahead_time, gain)
+        qhome[0] += 0.001
+        qhome[1] += 0.001
+        robot_real.rtde_c.waitPeriod(t_start)
+
+    robot_real.rtde_c.servoStop()
+    robot_real.rtde_c.stopScript()
+
+
 if __name__ == "__main__":
     # robot_real = RobotController()
     robot_kin = RobotUR5eKin()
-    q0 = [0, -np.pi / 4, np.pi / 2, -np.pi / 4, -np.pi / 2, 0]
-    qgrasp = [-2.5941, -1.1971, 1.9169, -2.2906, -1.5708, 0.5475]
+
+    qhome = [3.14, -1.610, 1.61, -1.558, -1.562, 0.0]
     Hgrasp = np.array(
         [
             [0.0000, -1.0000, 0.0000, 0.4],
             [-1.0000, -0.0000, -0.0000, 0.4],
-            [0.0000, -0.0000, -1.0000, 0.2],
+            [0.0000, -0.0000, -1.0000, 0.3],
             [0.0000, 0.0000, 0.0000, 1.0000],
         ]
     )
@@ -243,15 +293,15 @@ if __name__ == "__main__":
         print(f"Number of IK solutions found: {n}")
         print(Q)
 
-        diff = Q - np.array(q0)
+        diff = Q - np.array(qhome)
         norms = np.linalg.norm(diff, axis=1)
         best_idx = np.argmin(norms)
         print(f"Best IK solution index: {best_idx}, q: {Q[best_idx]}")
         q = Q[best_idx]
 
     ax3d = make_3d_axis(ax_s=1.0)
-
     (obj3d_line,) = ax3d.plot([], [], [], "ro", label="Grasp Pose")
-    robot_kin.plot_link_transforms(ax3d, q0)
+    robot_kin.plot_link_transforms(ax3d, qhome)
     robot_kin.plot_link_transforms(ax3d, q)
     robot_kin.plot_parallel_gripper(ax3d, Hgrasp)
+    plt.show()
