@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from robot3r import PlanarRRR
+from scipy.spatial.transform import Rotation as R
+from scipy.spatial.transform import Slerp
 
 np.random.seed(42)
 
@@ -14,7 +16,26 @@ class MSDRobotEE:
         self.k_pos = 10  # normal spring
         self.k_neg = -1.0  # negative stiffness
         self.dt = 0.02
-        self.c = 2.2 * np.sqrt(self.k_pos * self.m)  # critical damping
+        self.c = 2.0 * np.sqrt(self.k_pos * self.m)  # critical damping (linear)
+
+        # rotational params for 4x4 pose dynamics
+        self.I_rot = 1.0
+        self.k_rot = 10.0
+        self.c_rot = 2.0 * np.sqrt(
+            self.k_rot * self.I_rot
+        )  # critical damping (angular)
+
+    def set_rotational_stiffness(self, k_rot):
+        self.k_rot = float(k_rot)
+        if self.k_rot < 0.0:
+            raise ValueError("k_rot must be non-negative for stable damping")
+        self.c_rot = 2.0 * np.sqrt(self.k_rot * self.I_rot)
+
+    def set_rotational_inertia(self, I_rot):
+        self.I_rot = float(I_rot)
+        if self.I_rot <= 0.0:
+            raise ValueError("I_rot must be positive")
+        self.c_rot = 2.0 * np.sqrt(self.k_rot * self.I_rot)
 
     def step(self, pos_vec, vel_vec, obj_vec):
         # Vectorized 3D spring-damper force: F = -k(p - p_obj) - c*v
@@ -25,6 +46,120 @@ class MSDRobotEE:
         vel_vec = vel_vec + a * self.dt
         pos_vec = pos_vec + vel_vec * self.dt
         return pos_vec, vel_vec
+
+    def step2(self, T_ee, vel3d, T_obj):
+        pos_ee = T_ee[:3, 3]
+        pos_obj = T_obj[:3, 3]
+
+        pos_n, vel_n = self.step(pos_ee, vel3d, pos_obj)
+
+        R_ee = T_ee[:3, :3]
+        R_obj = T_obj[:3, :3]
+
+        R_desired = self.interp_Rotation(R_ee, R_obj, alpha=0.1)
+        T_next = np.eye(4)
+        T_next[:3, 3] = pos_n
+        T_next[:3, :3] = R_desired
+        return T_next, vel_n  # For simplicity, keep angular velocity unchanged
+
+    def interp_Rotation(self, R1, R2, alpha):
+        if alpha <= 0.01:
+            return R1
+        else:
+            r1 = R.from_matrix(R1)
+            r2 = R.from_matrix(R2)
+            slerp = Slerp([0, 1], R.from_matrix([R1, R2]))
+            r_interp = slerp(alpha)
+            return r_interp.as_matrix()
+
+    @staticmethod
+    def _validate_transform(T):
+        T = np.asarray(T, dtype=float)
+        if T.shape != (4, 4):
+            raise ValueError(f"Expected 4x4 transform, got shape {T.shape}")
+        return T
+
+    @staticmethod
+    def _skew(w):
+        return np.array(
+            [[0.0, -w[2], w[1]], [w[2], 0.0, -w[0]], [-w[1], w[0], 0.0]],
+            dtype=float,
+        )
+
+    @classmethod
+    def _so3_exp(cls, w):
+        theta = np.linalg.norm(w)
+        if theta < 1e-10:
+            return np.eye(3) + cls._skew(w)
+        k = w / theta
+        K = cls._skew(k)
+        return np.eye(3) + np.sin(theta) * K + (1.0 - np.cos(theta)) * (K @ K)
+
+    @staticmethod
+    def _so3_log(R):
+        tr = np.trace(R)
+        cos_theta = np.clip((tr - 1.0) * 0.5, -1.0, 1.0)
+        theta = np.arccos(cos_theta)
+        if theta < 1e-10:
+            return np.zeros(3)
+
+        # For theta near pi, use a numerically stable axis extraction.
+        if np.pi - theta < 1e-6:
+            axis = np.sqrt(np.maximum((np.diag(R) + 1.0) * 0.5, 0.0))
+            if R[2, 1] - R[1, 2] < 0.0:
+                axis[0] = -axis[0]
+            if R[0, 2] - R[2, 0] < 0.0:
+                axis[1] = -axis[1]
+            if R[1, 0] - R[0, 1] < 0.0:
+                axis[2] = -axis[2]
+            axis_norm = np.linalg.norm(axis)
+            if axis_norm < 1e-10:
+                return np.zeros(3)
+            return theta * axis / axis_norm
+
+        vee = np.array(
+            [R[2, 1] - R[1, 2], R[0, 2] - R[2, 0], R[1, 0] - R[0, 1]],
+            dtype=float,
+        )
+        return 0.5 * theta / np.sin(theta) * vee
+
+    def step_transform(self, T_ee, vel_twist, T_obj):
+        # Same spring-damper model on SE(3):
+        # linear:  x_ddot = -k(x - x_obj) - c*x_dot
+        # angular: w_dot = -k_rot*log(R_obj * R.T) - c_rot*w
+        T_ee = self._validate_transform(T_ee)
+        T_obj = self._validate_transform(T_obj)
+        vel_twist = np.asarray(vel_twist, dtype=float)
+        if vel_twist.shape != (6,):
+            raise ValueError(
+                f"Expected 6D twist velocity, got shape {vel_twist.shape}"
+            )
+
+        x = T_ee[:3, 3].copy()
+        R = T_ee[:3, :3].copy()
+        x_obj = T_obj[:3, 3]
+        R_obj = T_obj[:3, :3]
+
+        v = vel_twist[:3].copy()
+        w = vel_twist[3:].copy()
+
+        a_lin = (-self.k_pos * (x - x_obj) - self.c * v) / self.m
+        R_err = R_obj @ R.T
+        rot_err = self._so3_log(R_err)
+        a_ang = (-self.k_rot * rot_err - self.c_rot * w) / self.I_rot
+
+        v = v + a_lin * self.dt
+        w = w + a_ang * self.dt
+
+        x = x + v * self.dt
+        R = self._so3_exp(w * self.dt) @ R
+
+        T_next = np.eye(4)
+        T_next[:3, :3] = R
+        T_next[:3, 3] = x
+
+        vel_next = np.hstack((v, w))
+        return T_next, vel_next
 
 
 if __name__ == "__main__":

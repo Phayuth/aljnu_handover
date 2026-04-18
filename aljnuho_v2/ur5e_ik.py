@@ -27,6 +27,9 @@ class RobotController:
         self.gripper.connect(self.hostip, 63352)
         self.activate_gripper()
 
+        self.gripper_min = 0
+        self.gripper_max = 255
+
     def activate_gripper(self):
         if self.gripper.is_active():
             print("Gripper is active")
@@ -50,6 +53,12 @@ class RobotController:
         pose[3:6] = cv2.Rodrigues(H[:3, :3])[0].flatten()
         return pose
 
+    def make_H_from_pose(self, pose):
+        H = np.eye(4)
+        H[:3, :3] = cv2.Rodrigues(pose[3:6])[0]
+        H[:3, 3] = pose[0:3]
+        return H
+
     def get_actual_q(self):
         return self.rtde_r.getActualQ()
 
@@ -63,7 +72,8 @@ class RobotController:
         self.rtde_c.moveJ(q)
 
     def move_gripper(self, position, speed=255, force=255):
-        ack = self.gripper.move(position, speed, force)
+        pos = int(np.clip(position, self.gripper_min, self.gripper_max))
+        ack = self.gripper.move(pos, speed, force)
         return ack
 
 
@@ -247,7 +257,7 @@ def servoing():
 
     H = robot_real.get_actual_tcp_pose()
     q0 = robot_real.get_actual_q()
-    qhome = [3.14, -1.610, 1.61, -1.558, -1.562, 0.0]
+    qhome = [3.14, -2.1, 1.61, -1.558, -1.562, 0.0]
 
     # Parameters
     vel = 0.5
@@ -272,10 +282,12 @@ def servoing():
 
 
 if __name__ == "__main__":
-    # robot_real = RobotController()
+    robot_real = RobotController()
     robot_kin = RobotUR5eKin()
 
-    qhome = [3.14, -1.610, 1.61, -1.558, -1.562, 0.0]
+    qhome_mode1 = [3.14, -2.1, 1.61, -1.558, -1.562, 0.0]
+    qhome_mode2 = [3.13, -2.09, 1.609, 0.3278, 1.59, 3.308]
+
     Hgrasp = np.array(
         [
             [0.0000, -1.0000, 0.0000, 0.4],
@@ -293,7 +305,7 @@ if __name__ == "__main__":
         print(f"Number of IK solutions found: {n}")
         print(Q)
 
-        diff = Q - np.array(qhome)
+        diff = Q - np.array(qhome_mode1)
         norms = np.linalg.norm(diff, axis=1)
         best_idx = np.argmin(norms)
         print(f"Best IK solution index: {best_idx}, q: {Q[best_idx]}")
@@ -301,7 +313,8 @@ if __name__ == "__main__":
 
     ax3d = make_3d_axis(ax_s=1.0)
     (obj3d_line,) = ax3d.plot([], [], [], "ro", label="Grasp Pose")
-    robot_kin.plot_link_transforms(ax3d, qhome)
+    robot_kin.plot_link_transforms(ax3d, qhome_mode1)
+    robot_kin.plot_link_transforms(ax3d, qhome_mode2)
     robot_kin.plot_link_transforms(ax3d, q)
     robot_kin.plot_parallel_gripper(ax3d, Hgrasp)
     plt.show()

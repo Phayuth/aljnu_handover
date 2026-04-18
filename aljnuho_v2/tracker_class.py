@@ -1,6 +1,4 @@
 import numpy as np
-import matplotlib.pyplot as plt
-from matplotlib.patches import Ellipse
 from filterpy.kalman import UnscentedKalmanFilter as UKF
 from filterpy.kalman import MerweScaledSigmaPoints
 
@@ -23,7 +21,7 @@ class UKFRiskTracker:
         )
 
         # initial state: [x, y, z, vx, vy, vz]
-        self.ukf.x = np.array([0, 0, 0, 0, 0, 0])
+        self.ukf.x = np.array([10.0, 10.0, 10.0, 0.0, 0.0, 0.0])
         self.ukf.P *= 0.1
         self.ukf.Q = np.eye(6) * 1e-4
         self.ukf.R = np.eye(6) * 1e-2
@@ -68,16 +66,23 @@ class UKFRiskTracker:
         angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
         return width, height, angle
 
+    def pose_covariance_ellipse_3d(self, P, n_std=2.0):
+        """Return ellipse width, height, and angle from a 3D covariance matrix."""
+        eigvals, eigvecs = np.linalg.eigh(P[:3, :3])
+        order = np.argsort(eigvals)[::-1]
+        eigvals = eigvals[order]
+        eigvecs = eigvecs[:, order]
+
+        width = 2.0 * n_std * np.sqrt(max(eigvals[0], 1e-12))
+        height = 2.0 * n_std * np.sqrt(max(eigvals[1], 1e-12))
+        depth = 2.0 * n_std * np.sqrt(max(eigvals[2], 1e-12))
+        angle_xy = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
+        angle_xz = np.degrees(np.arctan2(eigvecs[2, 0], eigvecs[0, 0]))
+        return width, height, depth, angle_xy, angle_xz
+
     def speed_to_risk_scale(self, speed):
         scale = 1.0 + self.risk_vel_gain * speed
         return np.clip(scale, self.risk_scale_min, self.risk_scale_max)
-
-    def guard_action_from_speed(self, speed):
-        if speed >= self.retreat_speed_th:
-            return "MOVE BACK", "red"
-        if speed <= self.approach_speed_th:
-            return "MOVE IN", "green"
-        return "HOLD", "orange"
 
     def risk_covariance_ellipse(self, P, speed):
         """Return risk ellipse (width, height, angle) with velocity-based scaling."""
@@ -87,8 +92,26 @@ class UKFRiskTracker:
         scale = self.speed_to_risk_scale(speed)
         return width * scale, height * scale, angle
 
+    def risk_covariance_ellipse_3d(self, P, speed):
+        """Return risk ellipsoid (width, height, depth, angles) with velocity-based scaling."""
+        width, height, depth, angle_xy, angle_xz = self.pose_covariance_ellipse_3d(
+            P, n_std=self.risk_n_std
+        )
+        scale = self.speed_to_risk_scale(speed)
+        return width * scale, height * scale, depth * scale, angle_xy, angle_xz
+
+    def guard_action_from_speed(self, speed):
+        if speed >= self.retreat_speed_th:
+            return "MOVE BACK", "red"
+        if speed <= self.approach_speed_th:
+            return "MOVE IN", "green"
+        return "HOLD", "orange"
+
 
 if __name__ == "__main__":
+    import matplotlib.pyplot as plt
+    from matplotlib.patches import Ellipse
+
     tracker = UKFRiskTracker()
 
     # initial measurement
@@ -100,8 +123,8 @@ if __name__ == "__main__":
     mouse_pos_prev = {"x": None, "y": None}
 
     fig, ax = plt.subplots()
-    ax.set_xlim(-5, 5)
-    ax.set_ylim(-5, 5)
+    ax.set_xlim(-1.0, 1.0)
+    ax.set_ylim(-1.0, 1.0)
     ax.set_aspect("equal")
     (ukf_line,) = ax.plot([], [], "bo", label="UKF Estimate")
     (measurement_line,) = ax.plot([], [], "ro", label="Measurement")

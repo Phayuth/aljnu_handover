@@ -271,20 +271,3 @@ grsp = trimesh.creation.axis(origin_size=0.001, axis_length=0.1)
 grsp.apply_transform(Hgrasp)
 scene.add_geometry(grsp)
 scene.show(line_settings={"point_size": 5})
-
-
-ax = make_3d_axis(1.0, unit="m")
-plot_transform(ax, np.eye(4), s=0.1, name="world")
-ax.scatter(
-    point3d_cylinder_world_frame[:, 0],
-    point3d_cylinder_world_frame[:, 1],
-    point3d_cylinder_world_frame[:, 2],
-    c="b",
-    s=5,
-)
-plot_parallel_gripper(ax, Hgrasp)
-ax.set_xlabel("X")
-ax.set_ylabel("Y")
-ax.set_zlabel("Z")
-ax.set_box_aspect([1.0, 1.0, 1.0])
-plt.show()
