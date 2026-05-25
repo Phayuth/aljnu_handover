@@ -1,4 +1,5 @@
 import numpy as np
+from multiprocessing import shared_memory
 
 
 class IntegrateSystem:
@@ -9,9 +10,12 @@ class IntegrateSystem:
 
         self.qhome = [3.14, -2.1, 1.61, -1.558, -1.562, 0.0]
         self.qhome2 = [1.57, -2.1, 1.61, -1.558, -1.562, 0.0]
+        self.qhomeflip = [1.57, -2.3, 2.0, 0.3278, 1.59, np.pi]
         self.gripper_step = 25
         self.gripper_open = 0
-        self.gripper_close = 190
+        self.gripper_close = 125
+
+        self.tip_to_ee_zoffset = 0.156  # in m dist from robtiq tip to tool0
 
     def project_point_on_rotated_ellipse3d(
         self,
@@ -165,18 +169,185 @@ class IntegrateSystem:
         """Disengage grasp after placing the object."""
         pass
 
+    def keep_grasp_orientation(self, obj_P, reach_P, ee_pose):
+        """
+        Detect object front/back relative to current EE pose in 3D.
 
-def rot_x(theta_rad):
-    """Rotation matrix about +X axis."""
-    c = np.cos(theta_rad)
-    s = np.sin(theta_rad)
-    return np.array(
-        [
-            [1.0, 0.0, 0.0],
-            [0.0, c, -s],
-            [0.0, s, c],
-        ]
-    )
+        Generalization from 2D quadrants:
+        - 2D front: +x+y, +x-y  -> local x > 0
+        - 2D back : -x+y, -x-y  -> local x < 0
+
+        In 3D, use the EE local frame and the sign of local-x of (obj - ee).
+        Returns True if object is in front hemisphere, else False.
+        """
+        ee_P = ee_pose[0:3, 3]
+        diff = obj_P - ee_P
+
+        dist = np.linalg.norm(diff)
+        if dist < 1e-12:
+            return True
+
+        ee_R = ee_pose[0:3, 0:3]
+        ee_x = ee_R[:, 0]
+        obj_dir = diff / dist
+
+        # Cosine of angle between EE +X and object direction.
+        # Use deadband to reduce mode toggling near side boundary.
+        front_score = np.dot(ee_x, obj_dir)
+        back_threshold = -0.15
+        return front_score >= back_threshold
+
+    def make_grasp_pose(self, obj_P, reach_P, ee_pose):
+        """Calculate the desired end-effector pose for grasping the object.
+        The orientation of grasp is:
+        - Z axis: points toward the object (normal vector from ee_pose to obj_pose)
+        - X axis: parallel to XY plane, close to current EE X-axis to avoid large rotations
+        - Y axis: cross product of Z and X
+        Grasp position is equal to object position.
+        careful when it go too close, the robot flip flop
+        """
+        ee_P = ee_pose[0:3, 3]
+        ee_R = ee_pose[0:3, 0:3]
+
+        # If object is behind EE, keep current orientation and only follow position.
+        if not self.keep_grasp_orientation(
+            obj_P=obj_P, reach_P=reach_P, ee_pose=ee_pose
+        ):
+            H = np.eye(4)
+            H[0:3, 0:3] = ee_R
+            H[0:3, 3] = reach_P
+            return H
+
+        diff = reach_P - ee_P
+        diff_norm = np.linalg.norm(diff)
+        if diff_norm < 0.1:  # if too close, keep current orientation to avoid flip
+            H = np.eye(4)
+            H[0:3, 0:3] = ee_R
+            H[0:3, 3] = reach_P
+            return H
+
+        normz = diff / diff_norm
+
+        # Get current EE X-axis and project to XY plane
+        xdir_current = ee_pose[0:3, 0]
+        xdir = np.array([xdir_current[0], xdir_current[1], 0.0])
+
+        if np.linalg.norm(xdir) < 1e-12:
+            # If current EE X-axis is vertical, use [1, 0, 0]
+            xdir = np.array([1, 0, 0])
+        else:
+            xdir = xdir / np.linalg.norm(xdir)
+
+        # Ensure xdir is perpendicular to normz using Gram-Schmidt
+        xdir = xdir - np.dot(xdir, normz) * normz
+        if np.linalg.norm(xdir) < 1e-12:
+            # If xdir becomes zero after removing Z-component, use fallback
+            xdir = np.cross([0, 0, 1], normz)
+            if np.linalg.norm(xdir) < 1e-12:
+                xdir = np.array([1, 0, 0])
+            else:
+                xdir = xdir / np.linalg.norm(xdir)
+        else:
+            xdir = xdir / np.linalg.norm(xdir)
+
+        ydir = np.cross(normz, xdir)
+        ydir = ydir / max(np.linalg.norm(ydir), 1e-12)
+
+        # Keep orientation continuity: choose axis signs near current EE orientation.
+        if np.dot(xdir, ee_R[:, 0]) < 0.0:
+            xdir = -xdir
+            ydir = -ydir
+
+        # Rebuild orthonormal frame to avoid numeric drift.
+        ydir = np.cross(normz, xdir)
+        ydir = ydir / max(np.linalg.norm(ydir), 1e-12)
+        xdir = np.cross(ydir, normz)
+        xdir = xdir / max(np.linalg.norm(xdir), 1e-12)
+
+        # Secondary continuity check on Y axis.
+        if np.dot(ydir, ee_R[:, 1]) < 0.0:
+            xdir = -xdir
+            ydir = -ydir
+
+        Rchase = np.column_stack((xdir, ydir, normz))
+
+        H = np.eye(4)
+        H[0:3, 0:3] = Rchase
+        H[0:3, 3] = reach_P
+
+        return H
+
+    def offset_local_z(self, H, z_offset):
+        """Apply a local Z offset to the given pose H."""
+        R = H[0:3, 0:3]
+        t = H[0:3, 3]
+        t_offset = R @ np.array([0, 0, z_offset])
+        H_offset = np.eye(4)
+        H_offset[0:3, 0:3] = R
+        H_offset[0:3, 3] = t + t_offset
+        return H_offset
+
+    def make_grasp_pose_fixedR(self, obj_P, reach_P, ee_pose, Rfixed):
+        """Calculate the desired end-effector pose for grasping the object with fixed orientation."""
+        H = np.eye(4)
+        H[0:3, 0:3] = Rfixed
+        # H[0:3, 3] = obj_P  # use object position as grasp position
+        H[0:3, 3] = reach_P  # use reach position as grasp position
+        return H
+
+    def make_grasp_variable_z(self, obj_P, reach_P, ee_pose, Rfixed):
+        Hgrasp = np.eye(4)
+        Hgrasp[0:3, 3] = obj_P
+        Hgrasp[:3, :3] = Rfixed
+        # Hgrasp = Hgrasp @ self.make_h([0.0, 0.0, 0.02])
+        Hgrasp = Hgrasp @ self.make_h([0.0, 0.0, -0.1])
+
+        graspPointToBase = np.array([obj_P[0], obj_P[1], obj_P[2], 1.00])
+        PpointTotcp = np.linalg.inv(ee_pose) @ graspPointToBase
+        z = np.array([0.0, 1.0]).reshape(2, 1)
+        p = np.array([PpointTotcp[0], PpointTotcp[2]]).reshape(2, 1)
+        dotp = np.sum(z * p)
+        normz = np.linalg.norm(z)
+        normp = np.linalg.norm(p)
+        alpha = np.arccos(dotp / (normz * normp))
+        alphasign = alpha * np.sign(PpointTotcp[0])
+        HorientCorrection = self.make_hy(alphasign)
+
+        HgraspFinal = Hgrasp @ HorientCorrection
+        return HgraspFinal
+
+    def interp_q(self, q1, q2, alpha):
+        """Interpolate between two joint configurations."""
+        q1 = np.asarray(q1)
+        q2 = np.asarray(q2)
+        if np.linalg.norm(np.array(q1) - np.array(q2)) < 1e-12:
+            return q2
+        return (1 - alpha) * q1 + alpha * q2
+
+    def make_h(self, t):
+        H = np.eye(4)
+        H[:3, 3] = t
+        return H
+
+    def make_hy(self, theta_rad):
+        c = np.cos(theta_rad)
+        s = np.sin(theta_rad)
+        H = np.eye(4)
+        H[0, 0] = c
+        H[0, 2] = s
+        H[2, 0] = -s
+        H[2, 2] = c
+        return H
+
+    def make_retract(self, Hcurrent, retract_dist):
+        """Make a retracted pose by moving along local -Z direction."""
+        R = Hcurrent[0:3, 0:3]
+        t = Hcurrent[0:3, 3]
+        t_retract = R @ np.array([0, 0, -retract_dist])
+        H_retract = np.eye(4)
+        H_retract[0:3, 0:3] = R
+        H_retract[0:3, 3] = t + t_retract
+        return H_retract
 
 
 if __name__ == "__main__":
@@ -259,6 +430,7 @@ if __name__ == "__main__":
     (ee_obj_line,) = ax2d.plot([], [], "g-", linewidth=2, label="EE to Risk")
     (risk_proj_point,) = ax2d.plot([], [], "go", label="Risk Projection")
     (reach_proj_point,) = ax2d.plot([], [], "mo", label="Reach Projection")
+    (centroid_line,) = ax2d.plot([], [], "rx", label="Centroid Measurement")
 
     el = Ellipse(
         (0, 0),
@@ -330,9 +502,9 @@ if __name__ == "__main__":
         if event.key == "y":
             real_action["grip_delta"] -= intsyst.gripper_step
         if event.key == "u":
-            real_action["rot_x_delta"] += np.deg2rad(intsyst.rot_step_deg)
+            real_action["rot_x_delta"] += np.deg2rad(rot_step_deg)
         if event.key == "i":
-            real_action["rot_x_delta"] -= np.deg2rad(intsyst.rot_step_deg)
+            real_action["rot_x_delta"] -= np.deg2rad(rot_step_deg)
         if event.key == "p":
             real_action["move_to_place"] = False
         if event.key == "o":
@@ -347,6 +519,9 @@ if __name__ == "__main__":
     # set real to initial state
     robot_real.move_joints(intsyst.qhome)
     robot_real.move_gripper(real_action["grip_pos"])
+
+    # shm = shared_memory.SharedMemory(name="psm_bb2c88e9")
+    # centroids = np.ndarray((4,), dtype=np.float64, buffer=shm.buf)
 
     def loop():
         global obj_z_meas, obj_z_meas_filtered, Hhome, speed, speed6d, Rdesired
@@ -386,7 +561,7 @@ if __name__ == "__main__":
 
             # Update plot
             xobj = tracker.ukf.x[0]
-            yobj = 0.0
+            yobj = tracker.ukf.x[1]
             zobj = tracker.ukf.x[2]
             ukf_line.set_data([xobj], [zobj])
             measurement_line.set_data([obj_z_meas[0]], [obj_z_meas[2]])
@@ -450,14 +625,7 @@ if __name__ == "__main__":
             ee_obj_line.set_data([Hhome[0, 3], xproj], [Hhome[2, 3], zproj])
             risk_proj_point.set_data([xproj], [zproj])
             reach_proj_point.set_data([xreach], [zreach])
-
-            if real_action["rot_x_delta"] != 0.0:
-                # Local-frame rotation: post-multiply so +X is TCP's own axis.
-                Rdesired[:, :] = Rdesired @ rot_x(real_action["rot_x_delta"])
-                # Keep a proper orthonormal rotation matrix after repeated steps.
-                u, _, vt = np.linalg.svd(Rdesired)
-                Rdesired[:, :] = u @ vt
-                real_action["rot_x_delta"] = 0.0
+            # centroid_line.set_data([centroids[0]], [centroids[2]])
 
             if real_action["move"]:
                 # add msd model to ee and xreach point
@@ -467,18 +635,6 @@ if __name__ == "__main__":
 
                 if real_action["obj_grasped"]:
                     if real_action["move_to_place"]:
-                        # place_pos = Hplace[0:3, 3]
-                        # pos_ctrl, speed = eemodel.step(
-                        #     poses_c,
-                        #     speed,
-                        #     place_pos,
-                        # )
-                        # Hctrl = np.eye(4)
-                        # Hctrl[0:3, 0:3] = Hplace[0:3, 0:3]
-                        # Hctrl[0, 3] = pos_ctrl[0]
-                        # Hctrl[2, 3] = pos_ctrl[2]
-                        # pose_cl = robot_real.make_pose_from_H(Hctrl)
-
                         Hctrl, speed = eemodel.step2(
                             T_ee=Hcurrent,
                             vel3d=speed,
@@ -492,27 +648,20 @@ if __name__ == "__main__":
 
                 # if not grasped, control to follow reach point
                 elif not real_action["obj_grasped"]:
-
                     if real_action["move_chase_object"]:
-                        object_pos = np.array([xreach, yreach, zreach])
-                        # pos_ctrl, speed = eemodel.step(
-                        #     poses_c,
-                        #     speed,
-                        #     object_pos,
-                        # )
-                        # Hctrl = np.eye(4)
-                        # Hctrl[0:3, 0:3] = Rdesired
-                        # Hctrl[0, 3] = pos_ctrl[0]
-                        # Hctrl[2, 3] = pos_ctrl[2]
+                        obj_pos = np.array([xobj, yobj, zobj])
+                        reach_pos = np.array([xreach, yreach, zreach])
 
-                        Hobj = np.eye(4)
-                        Hobj[0:3, 3] = object_pos
-                        Hobj[0:3, 0:3] = Rdesired
+                        Hdesired = intsyst.make_grasp_pose(
+                            obj_P=obj_pos,
+                            reach_P=reach_pos,
+                            ee_pose=Hcurrent,
+                        )
 
                         Hctrl, speed = eemodel.step2(
                             T_ee=Hcurrent,
                             vel3d=speed,
-                            T_obj=Hobj,
+                            T_obj=Hdesired,
                         )
                         pose_cl = robot_real.make_pose_from_H(Hctrl)
 

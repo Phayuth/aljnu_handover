@@ -9,6 +9,7 @@ import cv2
 from pytransform3d.plot_utils import make_3d_axis
 from pytransform3d.transform_manager import TransformManager
 from pytransform3d.transformations import plot_transform
+import time
 
 np.set_printoptions(precision=4, suppress=True, linewidth=200)
 
@@ -71,10 +72,22 @@ class RobotController:
     def move_joints(self, q, vel=None, acc=None):
         self.rtde_c.moveJ(q)
 
+    def move_tcp(self, pose, vel=None, acc=None, asynchronous=False):
+        self.rtde_c.moveL(pose, vel, acc, asynchronous=asynchronous)
+
     def move_gripper(self, position, speed=255, force=255):
         pos = int(np.clip(position, self.gripper_min, self.gripper_max))
         ack = self.gripper.move(pos, speed, force)
         return ack
+
+    def start_contact_detection(self):
+        self.rtde_c.startContactDetection()
+
+    def read_contact(self):
+        return self.rtde_c.readContactDetection()
+
+    def stop_contact_detection(self):
+        self.rtde_c.stopContactDetection()
 
 
 class RobotUR5eKin:
@@ -281,7 +294,7 @@ def servoing():
     robot_real.rtde_c.stopScript()
 
 
-if __name__ == "__main__":
+def test_plot():
     robot_real = RobotController()
     robot_kin = RobotUR5eKin()
 
@@ -313,8 +326,66 @@ if __name__ == "__main__":
 
     ax3d = make_3d_axis(ax_s=1.0)
     (obj3d_line,) = ax3d.plot([], [], [], "ro", label="Grasp Pose")
-    robot_kin.plot_link_transforms(ax3d, qhome_mode1)
     robot_kin.plot_link_transforms(ax3d, qhome_mode2)
-    robot_kin.plot_link_transforms(ax3d, q)
     robot_kin.plot_parallel_gripper(ax3d, Hgrasp)
     plt.show()
+
+
+def test_simple_move():
+    robot_real = RobotController()
+
+    qhomeflip = [1.57, -2.3, 2.0, 0.3278, 1.59, np.pi]
+    robot_real.move_joints(qhomeflip)
+
+    H = robot_real.get_actual_tcp_pose()
+    print(f"==>> H: \n{H}")
+
+    Rfixed = H[:3, :3].copy()
+    print(f"==>> Rfixed: \n{Rfixed}")
+
+    obj_pos = np.array([-0.017, -0.7338, 0.2861])
+    print(f"==>> Object position: \n{obj_pos}")
+
+    Hgrasp = np.eye(4)
+    Hgrasp[:3, :3] = Rfixed
+    Hgrasp[:3, 3] = obj_pos
+    print(f"==>> Hgrasp: \n{Hgrasp}")
+
+    robot_real.move_tcp(Hgrasp)
+
+
+def test_contact_detection():
+    robot_real = RobotController()
+    qhome = [1.57, -2.3, 2.0, 0.3278, 1.59, np.pi]
+    robot_real.move_joints(qhome)
+
+    # Parameters
+    vel = 0.01
+    acc = 0.01
+    dt = 1.0 / 500  # 2ms
+    lookahead_time = 0.1
+    gain = 300
+
+    H = robot_real.get_actual_tcp_pose()
+    Hmove = H.copy()
+    Hmove[2, 3] = -0.1  # Move down by
+
+    robot_real.start_contact_detection()
+    for i in range(1000):
+        t_start = robot_real.rtde_c.initPeriod()
+        pose_cl = robot_real.make_pose_from_H(Hmove)
+        robot_real.rtde_c.servoL(pose_cl, vel, acc, dt, lookahead_time, gain)
+        robot_real.rtde_c.waitPeriod(t_start)
+        contact = robot_real.read_contact()
+        print(f"Contact state: {contact}")
+
+    robot_real.stop_contact_detection()
+
+    robot_real.rtde_c.servoStop()
+    robot_real.rtde_c.stopScript()
+
+
+if __name__ == "__main__":
+    # test_plot()
+    # test_simple_move()
+    test_contact_detection()

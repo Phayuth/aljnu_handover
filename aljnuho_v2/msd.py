@@ -12,10 +12,10 @@ class MSDRobotEE:
 
     def __init__(self):
         # system params
-        self.m = 1.0
-        self.k_pos = 10  # normal spring
+        self.m = 0.05
+        self.k_pos = 30.0  # normal spring
         self.k_neg = -1.0  # negative stiffness
-        self.dt = 0.02
+        self.dt = 0.01
         self.c = 2.0 * np.sqrt(self.k_pos * self.m)  # critical damping (linear)
 
         # rotational params for 4x4 pose dynamics
