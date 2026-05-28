@@ -71,13 +71,45 @@ class Center:
         draw_cx, draw_cy = center
         if draw_cx != 0 and draw_cy != 0:
             cv2.circle(rgb_image, (draw_cx, draw_cy), 5, (255, 0, 255), -1)
-            cv2.putText(rgb_image, text=f"centroid at {draw_cx}, {draw_cy}", org=(draw_cx, draw_cy), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=1, color=(255, 0, 255))
+            cv2.putText(
+                rgb_image,
+                text=f"centroid at {draw_cx}, {draw_cy}",
+                org=(draw_cx, draw_cy),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=0.5,
+                thickness=1,
+                color=(255, 0, 255),
+            )
+
+    def draw_mask_overlay_inplace(
+        self, rgb_image, mask_image, color=(0, 255, 0), alpha=0.35
+    ):
+        """Blend a binary mask into the image using a single color overlay."""
+        mask_bool = mask_image > 0
+        if not np.any(mask_bool):
+            return
+
+        overlay_color = np.array(color, dtype=np.float32)
+        image_float = rgb_image.astype(np.float32)
+        image_float[mask_bool] = ((1.0 - alpha) * image_float[mask_bool]) + (
+            alpha * overlay_color
+        )
+        np.clip(image_float, 0, 255, out=image_float)
+        rgb_image[:] = image_float.astype(np.uint8)
 
     def draw_over_image(self, rgb_image, uv):
         draw_cx, draw_cy = uv
         if draw_cx != 0 and draw_cy != 0:
             cv2.circle(rgb_image, (draw_cx, draw_cy), 5, (255, 0, 255), -1)
-            cv2.putText(rgb_image, text=f"{draw_cx}, {draw_cy}", org=(draw_cx, draw_cy), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.5, thickness=1, color=(255, 0, 255))
+            cv2.putText(
+                rgb_image,
+                text=f"{draw_cx}, {draw_cy}",
+                org=(draw_cx, draw_cy),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=0.5,
+                thickness=1,
+                color=(255, 0, 255),
+            )
 
     def compute_centroid_via_pixels_top(self, mask_image):
         """
@@ -106,7 +138,8 @@ class Center:
         if camera_location == "l":
             data_list = self.data_list_l
         else:
-            print("camera location has only r or l")
+            # print("camera location has only r or l")
+            pass
         x = data[0]
         y = data[1]
         if x + y != 0 and (x or y is None):
@@ -152,16 +185,20 @@ class Center:
 
         ###########################################
         # moving average filter
-        mean_left = self.mean_window(camera_location="l", data=left_center, length=5)
-        mean_right = self.mean_window(camera_location="r", data=right_center, length=5)
+        mean_left = self.mean_window(
+            camera_location="l", data=left_center, length=5
+        )
+        mean_right = self.mean_window(
+            camera_location="r", data=right_center, length=5
+        )
         ###########################################
 
         return mean_left, mean_right
 
     def trackedCenterShow(self, model, classes, imgleft, imgright):
         # # Perform inference
-        left_results = model(imgleft, classes=classes, conf=0.6)
-        right_results = model(imgright, classes=classes, conf=0.6)
+        left_results = model(imgleft, classes=classes, conf=0.6, verbose=False)
+        right_results = model(imgright, classes=classes, conf=0.6, verbose=False)
 
         left_mask = self.make_segmentation_masks(left_results, imgleft)
         right_mask = self.make_segmentation_masks(right_results, imgright)
@@ -174,14 +211,22 @@ class Center:
 
         ###########################################
         # moving average filter
-        mean_left = self.mean_window(camera_location="l", data=left_center, length=5)
-        mean_right = self.mean_window(camera_location="r", data=right_center, length=5)
+        mean_left = self.mean_window(
+            camera_location="l", data=left_center, length=5
+        )
+        mean_right = self.mean_window(
+            camera_location="r", data=right_center, length=5
+        )
         ###########################################
+
+        # draw mask over image
+        # self.draw_mask_overlay_inplace(imgleft, left_mask)
+        # self.draw_mask_overlay_inplace(imgright, right_mask)
 
         self.draw_over_image_inplace(imgleft, mean_left)
         self.draw_over_image_inplace(imgright, mean_right)
 
-        return mean_left, mean_right
+        return mean_left, mean_right, left_mask, right_mask
 
     def compute_cup_min_max(self, mask_image):
         xmean, ymean, xmin, xmax, ymin, ymax = 0, 0, 0, 0, 0, 0
@@ -193,7 +238,13 @@ class Center:
             xmax = int(np.max(X))
             ymin = int(np.min(Y))
             ymax = int(np.max(Y))
-        return (xmean, ymean), (xmin, ymean), (xmax, ymean), (xmean, ymin), (xmean, ymax)
+        return (
+            (xmean, ymean),
+            (xmin, ymean),
+            (xmax, ymean),
+            (xmean, ymin),
+            (xmean, ymax),
+        )
 
     def trackedMinMax(self, model, classes, frame1, frame2):
         left_image_np = np.array(frame1)
@@ -205,13 +256,25 @@ class Center:
 
         left_mask = self.make_segmentation_masks(left_results, left_image_np)
         right_mask = self.make_segmentation_masks(right_results, right_image_np)
-        l_cent, l_left, l_right, l_top, l_bottom = self.compute_cup_min_max(left_mask)
-        r_cent, r_left, r_right, r_top, r_bottom = self.compute_cup_min_max(right_mask)
+        l_cent, l_left, l_right, l_top, l_bottom = self.compute_cup_min_max(
+            left_mask
+        )
+        r_cent, r_left, r_right, r_top, r_bottom = self.compute_cup_min_max(
+            right_mask
+        )
 
-        return [l_cent, l_left, l_right, l_top, l_bottom], [r_cent, r_left, r_right, r_top, r_bottom]
+        return [l_cent, l_left, l_right, l_top, l_bottom], [
+            r_cent,
+            r_left,
+            r_right,
+            r_top,
+            r_bottom,
+        ]
 
     def trackedAllPoint(self, model, classes, frame1, frame2):
-        leftpoints, rightpoints = self.trackedMinMax(model, classes, frame1, frame2)
+        leftpoints, rightpoints = self.trackedMinMax(
+            model, classes, frame1, frame2
+        )
 
         for uv in leftpoints:
             self.draw_over_image(frame1, uv)
@@ -229,7 +292,9 @@ if __name__ == "__main__":
     classes = [40, 41]  # Class IDs in YOLO for 'wine glass' and 'cup'
 
     # Load the YOLO model
-    model = YOLO("/home/yuth/ws_yuthdev/neural_network/datasave/neural_weight/yolov8x-seg.pt")
+    model = YOLO(
+        "/home/yuth/ws_yuthdev/neural_network/datasave/neural_weight/yolov8x-seg.pt"
+    )
     cap1 = cv2.VideoCapture(10)
     cap2 = cv2.VideoCapture(4)
 
@@ -245,7 +310,9 @@ if __name__ == "__main__":
             # left_center, right_center = center.trackedCenter(model, classes, frame1, frame2)
             # print(left_center, right_center)
             # left, right = center.trackedCenterShow(model, classes, frame1, frame2)
-            leftpoints, rightpoints = center.trackedAllPoint(model, classes, frame1, frame2)
+            leftpoints, rightpoints = center.trackedAllPoint(
+                model, classes, frame1, frame2
+            )
 
             cv2.imshow("Left Inference", frame1)
             cv2.imshow("Right Inference", frame2)
